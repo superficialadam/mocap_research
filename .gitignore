@@ -4,4 +4,5 @@
 logs/
 run/
 vendor/
-
+tools/
+config/oauth2-proxy.env

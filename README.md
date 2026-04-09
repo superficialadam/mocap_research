@@ -71,6 +71,20 @@ Inspect status:
 ./scripts/status_kimodo_demo.sh
 ```
 
+## Public Access
+
+To put Kimodo behind Google Workspace login and expose it through Tailscale Funnel:
+
+```bash
+./scripts/install_oauth2_proxy.sh
+cp config/oauth2-proxy.env.example config/oauth2-proxy.env
+./scripts/start_public_gateway.sh
+```
+
+Full Google OAuth and Funnel instructions are in:
+
+`docs/PUBLIC_ACCESS.md`
+
 ## Access
 
 The demo listens on:
