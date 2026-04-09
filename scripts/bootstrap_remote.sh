@@ -30,8 +30,9 @@ if [[ -e "${VENV_DIR}" && ! -x "${VENV_PYTHON}" ]]; then
 fi
 
 if command -v uv >/dev/null 2>&1; then
-  uv venv --python 3.10 "${VENV_DIR}"
+  uv venv --clear --python 3.10 "${VENV_DIR}"
   uv pip install --python "${VENV_PYTHON}" --upgrade setuptools wheel
+  uv pip install --python "${VENV_PYTHON}" cmake ninja
   uv pip install --python "${VENV_PYTHON}" --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
   uv pip install --python "${VENV_PYTHON}" -e "${KIMODO_DIR}[all]"
 else
@@ -48,6 +49,7 @@ else
   # shellcheck disable=SC1091
   source "${VENV_DIR}/bin/activate"
   python -m pip install --upgrade pip setuptools wheel
+  python -m pip install cmake ninja
   python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
   python -m pip install -e "${KIMODO_DIR}[all]"
 fi
