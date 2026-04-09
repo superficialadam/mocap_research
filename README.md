@@ -1,0 +1,85 @@
+# mocap_research
+
+Thin deployment repo for running NVIDIA Kimodo on the Ubuntu 5090 box at `adam-Ultra-930`.
+
+## What this repo does
+
+- clones the upstream Kimodo code into `vendor/kimodo`
+- installs Kimodo into a local `.venv`
+- starts the text encoder and demo server on `0.0.0.0:7860`
+- keeps logs and PID files under this repo so the setup is repeatable
+
+## Remote layout
+
+Expected checkout path on the Ubuntu box:
+
+`/home/adam/CODE/blenda/mocap_research`
+
+## Prerequisites
+
+Kimodo requires a Hugging Face token on the host because the text encoder pulls the LLM2Vec / Llama weights. The upstream docs expect the token at:
+
+`~/.cache/huggingface/token`
+
+If it is missing, log in once on the Ubuntu box:
+
+```bash
+python3 -m venv ~/.hf-cli
+source ~/.hf-cli/bin/activate
+pip install --upgrade pip huggingface_hub[cli]
+hf auth login
+deactivate
+```
+
+## Bootstrap
+
+```bash
+./scripts/bootstrap_remote.sh
+```
+
+This will:
+
+1. clone or update `nv-tlabs/kimodo`
+2. clone or update `nv-tlabs/kimodo-viser`
+3. create `.venv`
+4. install GPU PyTorch for CUDA 12.8
+5. install Kimodo with demo extras
+
+## Start / Stop / Status
+
+Start Kimodo:
+
+```bash
+./scripts/start_kimodo_demo.sh
+```
+
+Stop Kimodo:
+
+```bash
+./scripts/stop_kimodo_demo.sh
+```
+
+Inspect status:
+
+```bash
+./scripts/status_kimodo_demo.sh
+```
+
+## Access
+
+The demo listens on:
+
+- `http://127.0.0.1:7860` on the Ubuntu host
+- `http://<tailscale-ip>:7860` from devices on the same Tailscale tailnet
+
+Get the current tailnet IP with:
+
+```bash
+tailscale ip -4 | head -n1
+```
+
+Kimodo upstream references:
+
+- Project page: <https://research.nvidia.com/labs/sil/projects/kimodo/>
+- Docs: <https://research.nvidia.com/labs/sil/projects/kimodo/docs/>
+- Source: <https://github.com/nv-tlabs/kimodo>
