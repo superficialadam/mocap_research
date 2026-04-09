@@ -24,7 +24,10 @@ clone_or_update() {
 clone_or_update "https://github.com/nv-tlabs/kimodo.git" "${KIMODO_DIR}"
 clone_or_update "https://github.com/nv-tlabs/kimodo-viser.git" "${VISER_DIR}"
 
-python3 -m venv "${VENV_DIR}"
+if ! python3 -m venv "${VENV_DIR}" 2>/dev/null; then
+  python3 -m pip install --user --upgrade pip virtualenv
+  python3 -m virtualenv "${VENV_DIR}"
+fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
@@ -39,4 +42,3 @@ Next steps:
   1. Ensure ~/.cache/huggingface/token exists on this host.
   2. Start the demo with: ./scripts/start_kimodo_demo.sh
 EOF
-
