@@ -1,0 +1,14 @@
+[Unit]
+Description=Kimodo Demo
+After=network-online.target kimodo-text-encoder.service
+Wants=network-online.target kimodo-text-encoder.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/CODE/blenda/mocap_research
+ExecStart=%h/CODE/blenda/mocap_research/scripts/run_kimodo_demo_service.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

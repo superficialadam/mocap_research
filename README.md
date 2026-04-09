@@ -86,6 +86,21 @@ Full Google OAuth and Funnel instructions are in:
 
 `docs/PUBLIC_ACCESS.md`
 
+## Reboot Persistence
+
+To install user `systemd` services so Kimodo and `oauth2-proxy` restart automatically:
+
+```bash
+./scripts/install_systemd_user_services.sh
+systemctl --user restart kimodo-text-encoder.service kimodo-demo.service oauth2-proxy.service
+```
+
+To make those user services start after a full reboot without an interactive login, enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
 ## Access
 
 The demo listens on:

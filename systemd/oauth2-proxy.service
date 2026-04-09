@@ -1,0 +1,14 @@
+[Unit]
+Description=oauth2-proxy for Kimodo
+After=network-online.target kimodo-demo.service
+Wants=network-online.target kimodo-demo.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/CODE/blenda/mocap_research
+ExecStart=%h/CODE/blenda/mocap_research/scripts/run_oauth2_proxy_service.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
