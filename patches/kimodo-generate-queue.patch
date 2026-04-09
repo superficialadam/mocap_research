@@ -1,5 +1,5 @@
 diff --git a/kimodo/demo/app.py b/kimodo/demo/app.py
-index a84fea1..14628d3 100644
+index a84fea1..82c210c 100644
 --- a/kimodo/demo/app.py
 +++ b/kimodo/demo/app.py
 @@ -6,6 +6,9 @@ import os
@@ -43,7 +43,27 @@ index a84fea1..14628d3 100644
  
          # Per-client sessions
          self.client_sessions: dict[int, ClientSession] = {}
-@@ -403,6 +423,7 @@ class Demo:
+@@ -293,6 +313,7 @@ class Demo:
+             gui_examples_dropdown,
+             gui_save_example_path_text,
+             gui_model_selector,
++            gui_generation_status,
+         ) = ui.create_gui(
+             demo=self,
+             client=client,
+@@ -337,9 +358,11 @@ class Demo:
+             gui_examples_dropdown=gui_examples_dropdown,
+             gui_save_example_path_text=gui_save_example_path_text,
+             gui_model_selector=gui_model_selector,
++            gui_generation_status=gui_generation_status,
+         )
+ 
+         self.client_sessions[client.client_id] = session
++        self._refresh_generation_button_states()
+ 
+         # Initialize default character for this client
+         self.add_character_motion(client, session.skeleton)
+@@ -403,6 +426,7 @@ class Demo:
          if HF_MODE and self.queue_manager is not None:
              self.queue_manager.on_client_disconnect(client_id)
  
@@ -51,7 +71,7 @@ index a84fea1..14628d3 100644
          self._cleanup_session_for_client(client_id)
  
      def set_start_direction_visible(self, client_id: int, visible: bool) -> None:
-@@ -527,6 +548,86 @@ class Demo:
+@@ -527,6 +551,124 @@ class Demo:
          sys.stderr.flush()
          os._exit(1)
  
@@ -65,17 +85,31 @@ index a84fea1..14628d3 100644
 +        with session.timeline_data["keyframe_update_lock"]:
 +            return self.compute_model_constraints_lst(session, model_bundle, num_frames)
 +
-+    def enqueue_generation(self, client: viser.ClientHandle, run: Callable[[], None]) -> int:
++    def _set_generation_status(self, session: ClientSession, content: str) -> None:
++        handle = session.gui_generation_status
++        if handle is not None:
++            handle.content = content
++
++    def enqueue_generation(self, client: viser.ClientHandle, run: Callable[[], None]) -> tuple[int, bool]:
 +        client_id = client.client_id
 +        with self._generation_cv:
 +            if self._active_generation_request is not None and self._active_generation_request.client_id == client_id:
 +                raise RuntimeError("A generation is already running for this browser session.")
-+            if any(request.client_id == client_id for request in self._generation_queue):
-+                raise RuntimeError("A generation is already queued for this browser session.")
++
++            active_offset = 1 if self._active_generation_request is not None else 0
++            for idx, request in enumerate(self._generation_queue):
++                if request.client_id == client_id:
++                    self._generation_request_counter += 1
++                    self._generation_queue[idx] = GenerationRequest(
++                        request_id=self._generation_request_counter,
++                        client_id=client_id,
++                        run=run,
++                    )
++                    self._refresh_generation_button_states()
++                    return idx + active_offset, True
 +
 +            queue_position = len(self._generation_queue)
-+            if self._active_generation_request is not None:
-+                queue_position += 1
++            queue_position += active_offset
 +            self._generation_request_counter += 1
 +            self._generation_queue.append(
 +                GenerationRequest(
@@ -86,7 +120,7 @@ index a84fea1..14628d3 100644
 +            )
 +            self._refresh_generation_button_states()
 +            self._generation_cv.notify()
-+            return queue_position
++            return queue_position, False
 +
 +    def remove_generation_requests(self, client_id: int) -> None:
 +        with self._generation_cv:
@@ -110,9 +144,33 @@ index a84fea1..14628d3 100644
 +            if active_client_id == client_id:
 +                button.label = "Generating..."
 +                button.disabled = True
++                self._set_generation_status(
++                    session,
++                    "**Queue:** Your request is running now.",
++                )
 +            elif client_id in queued_positions:
-+                button.label = f"Queued ({queued_positions[client_id]})"
-+                button.disabled = True
++                position = queued_positions[client_id]
++                button.label = f"Update Queued ({position})"
++                button.disabled = False
++                self._set_generation_status(
++                    session,
++                    f"**Queue:** Waiting in position {position}. Click **Generate** again to replace this queued job.",
++                )
++            elif button.label == "Choose Sample Before Generating":
++                self._set_generation_status(
++                    session,
++                    "**Queue:** Choose a sample before starting another generation.",
++                )
++            elif button.label == "Generate Disabled In Editing Mode":
++                self._set_generation_status(
++                    session,
++                    "**Queue:** Exit editing mode to generate again.",
++                )
++            else:
++                self._set_generation_status(
++                    session,
++                    "**Queue:** Ready. Editing remains available while queued jobs wait.",
++                )
 +
 +    def _generation_worker_loop(self) -> None:
 +        while True:
@@ -138,7 +196,7 @@ index a84fea1..14628d3 100644
      def generate(
          self,
          client: viser.ClientHandle,
-@@ -540,6 +641,9 @@ class Demo:
+@@ -540,6 +682,9 @@ class Demo:
          postprocess_parameters: Optional[dict] = None,
          transitions_parameters: Optional[dict] = None,
          real_robot_rotations: bool = False,
@@ -148,7 +206,7 @@ index a84fea1..14628d3 100644
      ) -> None:
          if not self._cuda_healthy:
              raise RuntimeError("CUDA is in a corrupted state. The space is restarting...")
-@@ -557,7 +661,7 @@ class Demo:
+@@ -557,7 +702,7 @@ class Demo:
  
          try:
              session = self.client_sessions[client.client_id]
@@ -157,7 +215,7 @@ index a84fea1..14628d3 100644
              generation.generate(
                  client=client,
                  session=session,
-@@ -575,6 +679,8 @@ class Demo:
+@@ -575,6 +720,8 @@ class Demo:
                  device=self.device,
                  clear_motions=self.clear_motions,
                  add_character_motion=self.add_character_motion,
@@ -215,11 +273,33 @@ index 00282e6..e3cfb4f 100644
              cur_joints_pos,
              joints_rot[i],
              foot_contacts[i],
+diff --git a/kimodo/demo/state.py b/kimodo/demo/state.py
+index e158b99..5c7ef25 100644
+--- a/kimodo/demo/state.py
++++ b/kimodo/demo/state.py
+@@ -51,6 +51,7 @@ class ClientSession:
+     gui_examples_dropdown: Optional[viser.GuiInputHandle] = None
+     gui_save_example_path_text: Optional[viser.GuiInputHandle] = None
+     gui_model_selector: Optional[viser.GuiInputHandle] = None
++    gui_generation_status: Optional[object] = None
+     last_prompt_texts: Optional[list[str]] = None
+     last_prompt_embeddings: Optional[torch.Tensor] = None
+     last_prompt_lengths: Optional[list[int]] = None
 diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
-index c61e80b..91f6886 100644
+index c61e80b..08c8a28 100644
 --- a/kimodo/demo/ui.py
 +++ b/kimodo/demo/ui.py
-@@ -2789,14 +2789,8 @@ def create_gui(
+@@ -467,6 +467,9 @@ def create_gui(
+                 )
+ 
+             gui_generate_button = client.gui.add_button("Generate", color="green")
++            gui_generation_status = client.gui.add_markdown(
++                "**Queue:** Ready. Editing remains available while queued jobs wait."
++            )
+         with client.gui.add_folder("Constraints", expand_by_default=False):
+             gui_gizmo_space_dropdown = client.gui.add_dropdown(
+                 "Gizmo space",
+@@ -2789,14 +2792,8 @@ def create_gui(
              if session is None:
                  return
  
@@ -235,7 +315,7 @@ index c61e80b..91f6886 100644
  
              num_samples = gui_num_samples_slider.value
              timeline = session.client.timeline
-@@ -2826,122 +2820,177 @@ def create_gui(
+@@ -2826,122 +2823,184 @@ def create_gui(
                  "root_margin": gui_root_margin.value,
              }
              try:
@@ -345,10 +425,10 @@ index c61e80b..91f6886 100644
 -
 -                # put the motion at zero
 -                demo.set_frame(client_id, 0)
- 
+-
 -            except Exception as e:
 -                import traceback
--
+ 
 -                traceback.print_exc()
 -                print(f"Error during generation for client {event_client.client_id}: {e}")
 -                # Re-enable buttons and notify the user
@@ -499,15 +579,22 @@ index c61e80b..91f6886 100644
 +                                pass
 +                        demo.check_cuda_health()
 +
-+                queue_position = demo.enqueue_generation(event_client, run_generation_request)
++                queue_position, replaced_request = demo.enqueue_generation(event_client, run_generation_request)
 +                queue_body = "Your request will start shortly. You can keep editing while you wait."
-+                if queue_position > 0:
++                queue_title = "Generation queued"
++                if replaced_request:
++                    queue_title = "Queued generation updated"
++                    queue_body = (
++                        f"Your queued request was replaced at position {queue_position}. "
++                        "Keep editing and click Generate again if you want to replace it once more."
++                    )
++                elif queue_position > 0:
 +                    queue_body = (
 +                        f"Your request is queued at position {queue_position}. "
 +                        "You can keep editing while you wait."
 +                    )
 +                event_client.add_notification(
-+                    title="Generation queued",
++                    title=queue_title,
 +                    body=queue_body,
 +                    auto_close_seconds=4.0,
 +                    color="blue",
@@ -525,3 +612,9 @@ index c61e80b..91f6886 100644
  
      #
      # Visualization settings
+@@ -3231,4 +3290,5 @@ def create_gui(
+         gui_examples_dropdown,
+         gui_save_example_path_text,
+         gui_model_selector,
++        gui_generation_status,
+     )
