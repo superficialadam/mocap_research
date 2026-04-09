@@ -45,6 +45,12 @@ This will:
 4. install GPU PyTorch for CUDA 12.8
 5. install Kimodo with demo extras
 
+Authenticate Hugging Face after bootstrap:
+
+```bash
+./scripts/login_huggingface.sh
+```
+
 ## Start / Stop / Status
 
 Start Kimodo:
