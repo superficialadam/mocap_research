@@ -26,6 +26,7 @@ clone_or_update() {
 
 clone_or_update "https://github.com/nv-tlabs/kimodo.git" "${KIMODO_DIR}"
 clone_or_update "https://github.com/nv-tlabs/kimodo-viser.git" "${VISER_DIR}"
+./scripts/apply_local_patches.sh
 
 if [[ -e "${VENV_DIR}" && ! -x "${VENV_PYTHON}" ]]; then
   rm -rf "${VENV_DIR}"

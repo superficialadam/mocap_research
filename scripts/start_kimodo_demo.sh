@@ -30,6 +30,8 @@ if [[ ! -d "${KIMODO_DIR}" ]]; then
   exit 1
 fi
 
+"${ROOT_DIR}/scripts/apply_local_patches.sh" >/dev/null
+
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 

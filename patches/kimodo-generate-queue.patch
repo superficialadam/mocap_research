@@ -1,0 +1,527 @@
+diff --git a/kimodo/demo/app.py b/kimodo/demo/app.py
+index a84fea1..14628d3 100644
+--- a/kimodo/demo/app.py
++++ b/kimodo/demo/app.py
+@@ -6,6 +6,9 @@ import os
+ import shutil
+ import threading
+ import time
++import traceback
++from dataclasses import dataclass
++from typing import Callable
+ from typing import Optional
+ 
+ import numpy as np
+@@ -52,6 +55,13 @@ from .queue_manager import QueueManager, UserQueue
+ from .state import ClientSession, ModelBundle
+ 
+ 
++@dataclass
++class GenerationRequest:
++    request_id: int
++    client_id: int
++    run: Callable[[], None]
++
++
+ class Demo:
+     def __init__(self, default_model_name: str = DEFAULT_MODEL):
+         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+@@ -68,6 +78,16 @@ class Demo:
+         # Serialize GPU-bound generation across all clients
+         self._generation_lock = threading.Lock()
+         self._cuda_healthy = True
++        self._generation_queue: list[GenerationRequest] = []
++        self._active_generation_request: GenerationRequest | None = None
++        self._generation_request_counter = 0
++        self._generation_cv = threading.Condition()
++        self._generation_worker = threading.Thread(
++            target=self._generation_worker_loop,
++            name="kimodo-generation-queue",
++            daemon=True,
++        )
++        self._generation_worker.start()
+ 
+         # Per-client sessions
+         self.client_sessions: dict[int, ClientSession] = {}
+@@ -403,6 +423,7 @@ class Demo:
+         if HF_MODE and self.queue_manager is not None:
+             self.queue_manager.on_client_disconnect(client_id)
+ 
++        self.remove_generation_requests(client_id)
+         self._cleanup_session_for_client(client_id)
+ 
+     def set_start_direction_visible(self, client_id: int, visible: bool) -> None:
+@@ -527,6 +548,86 @@ class Demo:
+         sys.stderr.flush()
+         os._exit(1)
+ 
++    def snapshot_model_constraints(
++        self,
++        session: ClientSession,
++        num_frames: int,
++        model_name_override: str | None = None,
++    ):
++        model_bundle = self.load_model(model_name_override or session.model_name)
++        with session.timeline_data["keyframe_update_lock"]:
++            return self.compute_model_constraints_lst(session, model_bundle, num_frames)
++
++    def enqueue_generation(self, client: viser.ClientHandle, run: Callable[[], None]) -> int:
++        client_id = client.client_id
++        with self._generation_cv:
++            if self._active_generation_request is not None and self._active_generation_request.client_id == client_id:
++                raise RuntimeError("A generation is already running for this browser session.")
++            if any(request.client_id == client_id for request in self._generation_queue):
++                raise RuntimeError("A generation is already queued for this browser session.")
++
++            queue_position = len(self._generation_queue)
++            if self._active_generation_request is not None:
++                queue_position += 1
++            self._generation_request_counter += 1
++            self._generation_queue.append(
++                GenerationRequest(
++                    request_id=self._generation_request_counter,
++                    client_id=client_id,
++                    run=run,
++                )
++            )
++            self._refresh_generation_button_states()
++            self._generation_cv.notify()
++            return queue_position
++
++    def remove_generation_requests(self, client_id: int) -> None:
++        with self._generation_cv:
++            original_len = len(self._generation_queue)
++            self._generation_queue = [
++                request for request in self._generation_queue if request.client_id != client_id
++            ]
++            if len(self._generation_queue) != original_len:
++                self._refresh_generation_button_states()
++
++    def _refresh_generation_button_states(self) -> None:
++        queued_positions = {
++            request.client_id: idx + 1 for idx, request in enumerate(self._generation_queue)
++        }
++        active_client_id = None
++        if self._active_generation_request is not None:
++            active_client_id = self._active_generation_request.client_id
++
++        for client_id, session in list(self.client_sessions.items()):
++            button = session.gui_elements.gui_generate_button
++            if active_client_id == client_id:
++                button.label = "Generating..."
++                button.disabled = True
++            elif client_id in queued_positions:
++                button.label = f"Queued ({queued_positions[client_id]})"
++                button.disabled = True
++
++    def _generation_worker_loop(self) -> None:
++        while True:
++            with self._generation_cv:
++                while not self._generation_queue:
++                    self._generation_cv.wait()
++                request = self._generation_queue.pop(0)
++                self._active_generation_request = request
++                self._refresh_generation_button_states()
++
++            try:
++                if not self.client_active(request.client_id):
++                    continue
++                request.run()
++            except Exception:
++                traceback.print_exc()
++            finally:
++                with self._generation_cv:
++                    if self._active_generation_request is request:
++                        self._active_generation_request = None
++                    self._refresh_generation_button_states()
++
+     def generate(
+         self,
+         client: viser.ClientHandle,
+@@ -540,6 +641,9 @@ class Demo:
+         postprocess_parameters: Optional[dict] = None,
+         transitions_parameters: Optional[dict] = None,
+         real_robot_rotations: bool = False,
++        model_name_override: Optional[str] = None,
++        model_constraints_override=None,
++        skeleton_override: Optional[SkeletonBase] = None,
+     ) -> None:
+         if not self._cuda_healthy:
+             raise RuntimeError("CUDA is in a corrupted state. The space is restarting...")
+@@ -557,7 +661,7 @@ class Demo:
+ 
+         try:
+             session = self.client_sessions[client.client_id]
+-            model_bundle = self.load_model(session.model_name)
++            model_bundle = self.load_model(model_name_override or session.model_name)
+             generation.generate(
+                 client=client,
+                 session=session,
+@@ -575,6 +679,8 @@ class Demo:
+                 device=self.device,
+                 clear_motions=self.clear_motions,
+                 add_character_motion=self.add_character_motion,
++                model_constraints_override=model_constraints_override,
++                skeleton_override=skeleton_override,
+             )
+         finally:
+             self._generation_lock.release()
+diff --git a/kimodo/demo/generation.py b/kimodo/demo/generation.py
+index 00282e6..e3cfb4f 100644
+--- a/kimodo/demo/generation.py
++++ b/kimodo/demo/generation.py
+@@ -147,6 +147,8 @@ def generate(
+     device: str,
+     clear_motions,
+     add_character_motion,
++    model_constraints_override=None,
++    skeleton_override=None,
+ ) -> None:
+     client_id = client.client_id
+     print(
+@@ -155,10 +157,13 @@ def generate(
+ 
+     seed_everything(seed)
+ 
+-    model_constraints = compute_model_constraints_lst(session, model_bundle, sum(num_frames), device)
++    model_constraints = model_constraints_override
++    if model_constraints is None:
++        model_constraints = compute_model_constraints_lst(session, model_bundle, sum(num_frames), device)
+     cfg_weight = cfg_weight or [2.0, 2.0]
+     postprocess_parameters = postprocess_parameters or {}
+     transitions_parameters = transitions_parameters or {}
++    generation_skeleton = skeleton_override or session.skeleton
+ 
+     encoder = getattr(model_bundle.model, "text_encoder", None)
+     if isinstance(encoder, CachedTextEncoder):
+@@ -192,9 +197,9 @@ def generate(
+     foot_contacts = pred_joints_output.get("foot_contacts")
+ 
+     # Optionally project G1 to real robot DoF (1-DoF per joint, clamped) for display.
+-    if real_robot_rotations and isinstance(session.skeleton, G1Skeleton34):
++    if real_robot_rotations and isinstance(generation_skeleton, G1Skeleton34):
+         joints_pos, joints_rot = apply_g1_real_robot_projection(
+-            session.skeleton,
++            generation_skeleton,
+             pred_joints_output["posed_joints"],
+             pred_joints_output["global_rot_mats"],
+             clamp_to_limits=True,
+@@ -211,7 +216,7 @@ def generate(
+         cur_joints_pos[..., 0] += x_trans[i]
+         add_character_motion(
+             client,
+-            session.skeleton,
++            generation_skeleton,
+             cur_joints_pos,
+             joints_rot[i],
+             foot_contacts[i],
+diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
+index c61e80b..91f6886 100644
+--- a/kimodo/demo/ui.py
++++ b/kimodo/demo/ui.py
+@@ -2789,14 +2789,8 @@ def create_gui(
+             if session is None:
+                 return
+ 
+-            generating_notif = event_client.add_notification(
+-                title="Generating motion...",
+-                body="Generating motions for the given prompt!",
+-                loading=True,
+-                with_close_button=False,
+-            )
+             gui_generate_button.disabled = True
+-            client.timeline.disable_constraints()
++            gui_load_model_button.disabled = True
+ 
+             num_samples = gui_num_samples_slider.value
+             timeline = session.client.timeline
+@@ -2826,122 +2820,177 @@ def create_gui(
+                 "root_margin": gui_root_margin.value,
+             }
+             try:
+-                demo.generate(
+-                    event_client,
+-                    texts,
+-                    num_frames,
+-                    num_samples,
+-                    gui_seed.value,
+-                    gui_diffusion_steps_slider.value,
+-                    cfg_weight=[
+-                        gui_cfg_text_weight_slider.value,
+-                        gui_cfg_constraint_weight_slider.value,
+-                    ],
+-                    cfg_type="separated" if gui_cfg_checkbox.value else "nocfg",
+-                    postprocess_parameters=postprocess_parameters,
+-                    transitions_parameters=transitions_parameters,
+-                    real_robot_rotations=gui_real_robot_rotations_checkbox.value,
++                request_model_name = session.model_name
++                request_skeleton = session.skeleton
++                request_seed = gui_seed.value
++                request_diffusion_steps = gui_diffusion_steps_slider.value
++                request_cfg_weight = [
++                    gui_cfg_text_weight_slider.value,
++                    gui_cfg_constraint_weight_slider.value,
++                ]
++                request_cfg_type = "separated" if gui_cfg_checkbox.value else "nocfg"
++                request_real_robot_rotations = gui_real_robot_rotations_checkbox.value
++                model_constraints_snapshot = demo.snapshot_model_constraints(
++                    session,
++                    total_nb_frames,
++                    model_name_override=request_model_name,
+                 )
+-                session.max_frame_idx = int(session.cur_duration * session.model_fps - 1)
+-                session.max_frame_idx = int(session.cur_duration * session.model_fps) - 1
+-                if session.frame_idx > session.max_frame_idx:
+-                    session.frame_idx = session.max_frame_idx
+-
+-                if num_samples > 1:
+-                    # add mesh selector to choose character to commit
+-                    def commit_motion(event: viser.GuiEvent) -> None:
+-                        target = event.target
+-                        commit_name = target.name.split("/")[1]  # e.g. /character0/simple_skinned
+-                        print(f"Committing motion for character: {commit_name}")
+-                        # delete non-selected motions
+-                        new_motion_kwargs = None
+-                        for character_name, motion in session.motions.items():
+-                            if character_name == commit_name:
+-                                new_motion_kwargs = {
+-                                    "skeleton": session.skeleton,
+-                                    "joints_rot": motion.joints_rot,
+-                                    "foot_contacts": motion.foot_contacts,
+-                                }
+-                                root_x_offset = motion.joints_pos[0, session.skeleton.root_idx, 0]
+-                                new_joints_pos = motion.joints_pos.clone()
+-                                new_joints_pos[..., 0] -= root_x_offset
+-                                new_motion_kwargs["joints_pos"] = new_joints_pos
+-                                break
+-                        # clear and re-add the selected motion
+-                        demo.clear_motions(event_client.client_id)
+-                        demo.add_character_motion(event_client, **new_motion_kwargs)
+-                        gui_edit_constraint_button.disabled = False
+-                        gui_generate_button.disabled = False
+-                        gui_snap_to_constraint_button.disabled = False
+-                        client.timeline.enable_constraints()
+-                        gui_generate_button.label = "Generate"
+-                        gui_save_example_button.disabled = False
+-                        gui_save_motion_button.disabled = False
+-                        gui_download_button.disabled = False
+-                        gui_save_constraints_button.disabled = False
+-                        gui_load_example_button.disabled = False
+-
+-                    for motion in session.motions.values():
+-                        char = motion.character
+-                        character_name = char.name  # e.g. "character0"
+-                        if char.skinned_mesh is not None:
+-                            char.skinned_mesh.on_click(commit_motion)
+-                        elif char.g1_mesh_rig is not None:
+-                            # Register click on every part so any part can be clicked,
+-                            # and use highlight_group so the whole robot highlights together.
+-                            for handle in char.g1_mesh_rig.mesh_handles:
+-                                handle.on_click(commit_motion, highlight_group=character_name)
+-
+-                    gui_edit_constraint_button.disabled = True
+-                    gui_generate_button.disabled = True
+-                    gui_snap_to_constraint_button.disabled = True
+-                    gui_generate_button.label = "Choose Sample Before Generating"
+-                    gui_save_example_button.disabled = True
+-                    gui_save_motion_button.disabled = True
+-                    gui_download_button.disabled = True
+-                    gui_save_constraints_button.disabled = True
+-                    gui_load_example_button.disabled = True
+-                else:
+-                    gui_edit_constraint_button.disabled = False
+-                    gui_generate_button.disabled = False
+-                    gui_snap_to_constraint_button.disabled = False
+-                    client.timeline.enable_constraints()
+-
+-                generating_notif.title = "Motion generation finished!"
+-                generating_notif.body = "Motions have been generated successfully for the given prompt."
+-                if num_samples > 1:
+-                    generating_notif.body += " Now choose which sample to commit."
+-                generating_notif.loading = False
+-                generating_notif.with_close_button = True
+-                generating_notif.auto_close_seconds = 5.0
+-                generating_notif.color = "green"
+-
+-                # put the motion at zero
+-                demo.set_frame(client_id, 0)
+ 
+-            except Exception as e:
+-                import traceback
+-
+-                traceback.print_exc()
+-                print(f"Error during generation for client {event_client.client_id}: {e}")
+-                # Re-enable buttons and notify the user
+-                if event_client.client_id in demo.client_sessions:
+-                    session = demo.client_sessions[event_client.client_id]
+-                    gui_generate_button.disabled = False
+-                    gui_load_example_button.disabled = False
+-                    gui_save_example_button.disabled = False
+-                    gui_save_motion_button.disabled = False
+-                    gui_download_button.disabled = False
++                def run_generation_request() -> None:
++                    generating_notif = event_client.add_notification(
++                        title="Generating motion...",
++                        body="Generating motions for the queued request.",
++                        loading=True,
++                        with_close_button=False,
++                    )
+                     try:
+-                        event_client.add_notification(
+-                            title="Generation failed!",
+-                            body=f"Error: {str(e)}",
+-                            auto_close_seconds=5.0,
+-                            color="red",
++                        demo.generate(
++                            event_client,
++                            texts,
++                            num_frames,
++                            num_samples,
++                            request_seed,
++                            request_diffusion_steps,
++                            cfg_weight=request_cfg_weight,
++                            cfg_type=request_cfg_type,
++                            postprocess_parameters=postprocess_parameters,
++                            transitions_parameters=transitions_parameters,
++                            real_robot_rotations=request_real_robot_rotations,
++                            model_name_override=request_model_name,
++                            model_constraints_override=model_constraints_snapshot,
++                            skeleton_override=request_skeleton,
+                         )
+-                    except Exception:
+-                        pass
+-                demo.check_cuda_health()
++                        if event_client.client_id not in demo.client_sessions:
++                            return
++
++                        session = demo.client_sessions[event_client.client_id]
++                        session.max_frame_idx = int(session.cur_duration * session.model_fps - 1)
++                        session.max_frame_idx = int(session.cur_duration * session.model_fps) - 1
++                        if session.frame_idx > session.max_frame_idx:
++                            session.frame_idx = session.max_frame_idx
++
++                        if num_samples > 1:
++                            # add mesh selector to choose character to commit
++                            def commit_motion(event: viser.GuiEvent) -> None:
++                                target = event.target
++                                commit_name = target.name.split("/")[1]  # e.g. /character0/simple_skinned
++                                print(f"Committing motion for character: {commit_name}")
++                                # delete non-selected motions
++                                new_motion_kwargs = None
++                                for character_name, motion in session.motions.items():
++                                    if character_name == commit_name:
++                                        new_motion_kwargs = {
++                                            "skeleton": session.skeleton,
++                                            "joints_rot": motion.joints_rot,
++                                            "foot_contacts": motion.foot_contacts,
++                                        }
++                                        root_x_offset = motion.joints_pos[0, session.skeleton.root_idx, 0]
++                                        new_joints_pos = motion.joints_pos.clone()
++                                        new_joints_pos[..., 0] -= root_x_offset
++                                        new_motion_kwargs["joints_pos"] = new_joints_pos
++                                        break
++                                # clear and re-add the selected motion
++                                demo.clear_motions(event_client.client_id)
++                                demo.add_character_motion(event_client, **new_motion_kwargs)
++                                gui_edit_constraint_button.disabled = False
++                                gui_generate_button.disabled = False
++                                gui_snap_to_constraint_button.disabled = False
++                                gui_generate_button.label = "Generate"
++                                gui_save_example_button.disabled = False
++                                gui_save_motion_button.disabled = False
++                                gui_download_button.disabled = False
++                                gui_save_constraints_button.disabled = False
++                                gui_load_example_button.disabled = False
++                                gui_load_model_button.disabled = False
++
++                            for motion in session.motions.values():
++                                char = motion.character
++                                character_name = char.name  # e.g. "character0"
++                                if char.skinned_mesh is not None:
++                                    char.skinned_mesh.on_click(commit_motion)
++                                elif char.g1_mesh_rig is not None:
++                                    # Register click on every part so any part can be clicked,
++                                    # and use highlight_group so the whole robot highlights together.
++                                    for handle in char.g1_mesh_rig.mesh_handles:
++                                        handle.on_click(commit_motion, highlight_group=character_name)
++
++                            gui_edit_constraint_button.disabled = True
++                            gui_generate_button.disabled = True
++                            gui_snap_to_constraint_button.disabled = True
++                            gui_generate_button.label = "Choose Sample Before Generating"
++                            gui_save_example_button.disabled = True
++                            gui_save_motion_button.disabled = True
++                            gui_download_button.disabled = True
++                            gui_save_constraints_button.disabled = True
++                            gui_load_example_button.disabled = True
++                        else:
++                            gui_edit_constraint_button.disabled = False
++                            gui_generate_button.disabled = False
++                            gui_generate_button.label = "Generate"
++                            gui_snap_to_constraint_button.disabled = False
++                            gui_load_model_button.disabled = False
++
++                        generating_notif.title = "Motion generation finished!"
++                        generating_notif.body = "Motions have been generated successfully for the given prompt."
++                        if num_samples > 1:
++                            generating_notif.body += " Now choose which sample to commit."
++                        generating_notif.loading = False
++                        generating_notif.with_close_button = True
++                        generating_notif.auto_close_seconds = 5.0
++                        generating_notif.color = "green"
++
++                        # put the motion at zero
++                        demo.set_frame(client_id, 0)
++
++                    except Exception as e:
++                        import traceback
++
++                        traceback.print_exc()
++                        print(f"Error during generation for client {event_client.client_id}: {e}")
++                        # Re-enable buttons and notify the user
++                        if event_client.client_id in demo.client_sessions:
++                            session = demo.client_sessions[event_client.client_id]
++                            gui_generate_button.disabled = False
++                            gui_generate_button.label = "Generate"
++                            gui_load_model_button.disabled = False
++                            gui_load_example_button.disabled = False
++                            gui_save_example_button.disabled = False
++                            gui_save_motion_button.disabled = False
++                            gui_download_button.disabled = False
++                            try:
++                                event_client.add_notification(
++                                    title="Generation failed!",
++                                    body=f"Error: {str(e)}",
++                                    auto_close_seconds=5.0,
++                                    color="red",
++                                )
++                            except Exception:
++                                pass
++                        demo.check_cuda_health()
++
++                queue_position = demo.enqueue_generation(event_client, run_generation_request)
++                queue_body = "Your request will start shortly. You can keep editing while you wait."
++                if queue_position > 0:
++                    queue_body = (
++                        f"Your request is queued at position {queue_position}. "
++                        "You can keep editing while you wait."
++                    )
++                event_client.add_notification(
++                    title="Generation queued",
++                    body=queue_body,
++                    auto_close_seconds=4.0,
++                    color="blue",
++                )
++            except Exception as e:
++                gui_generate_button.disabled = False
++                gui_generate_button.label = "Generate"
++                gui_load_model_button.disabled = False
++                event_client.add_notification(
++                    title="Could not queue generation",
++                    body=str(e),
++                    auto_close_seconds=5.0,
++                    color="red",
++                )
+ 
+     #
+     # Visualization settings

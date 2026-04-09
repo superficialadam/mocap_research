@@ -41,9 +41,10 @@ This will:
 
 1. clone or update `nv-tlabs/kimodo`
 2. clone or update `nv-tlabs/kimodo-viser`
-3. create `.venv`
-4. install GPU PyTorch for CUDA 12.8
-5. install Kimodo with demo extras
+3. apply local Kimodo patches from `patches/`
+4. create `.venv`
+5. install GPU PyTorch for CUDA 12.8
+6. install Kimodo with demo extras
 
 Authenticate Hugging Face after bootstrap:
 
