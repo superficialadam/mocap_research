@@ -8,6 +8,8 @@ VISER_DIR="${KIMODO_DIR}/kimodo-viser"
 VENV_DIR="${ROOT_DIR}/.venv"
 VENV_PYTHON="${VENV_DIR}/bin/python"
 
+export PATH="${HOME}/.local/bin:${PATH}"
+
 mkdir -p "${VENDOR_DIR}" "${ROOT_DIR}/logs" "${ROOT_DIR}/run"
 
 clone_or_update() {
@@ -30,9 +32,10 @@ if [[ -e "${VENV_DIR}" && ! -x "${VENV_PYTHON}" ]]; then
 fi
 
 if command -v uv >/dev/null 2>&1; then
+  uv tool install --force cmake
+  uv tool install --force ninja
   uv venv --clear --python 3.10 "${VENV_DIR}"
   uv pip install --python "${VENV_PYTHON}" --upgrade setuptools wheel
-  uv pip install --python "${VENV_PYTHON}" cmake ninja
   uv pip install --python "${VENV_PYTHON}" --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
   uv pip install --python "${VENV_PYTHON}" -e "${KIMODO_DIR}[all]"
 else
@@ -49,7 +52,7 @@ else
   # shellcheck disable=SC1091
   source "${VENV_DIR}/bin/activate"
   python -m pip install --upgrade pip setuptools wheel
-  python -m pip install cmake ninja
+  python -m pip install --user cmake ninja
   python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
   python -m pip install -e "${KIMODO_DIR}[all]"
 fi
