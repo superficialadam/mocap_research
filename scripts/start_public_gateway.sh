@@ -31,6 +31,11 @@ set +a
 : "${OAUTH2_PROXY_CLIENT_SECRET:?Missing OAUTH2_PROXY_CLIENT_SECRET in ${CONFIG_FILE}}"
 : "${OAUTH2_PROXY_COOKIE_SECRET:?Missing OAUTH2_PROXY_COOKIE_SECRET in ${CONFIG_FILE}}"
 
+if [[ "${OAUTH2_PROXY_CLIENT_ID}" == fill-me* || "${OAUTH2_PROXY_CLIENT_SECRET}" == "fill-me" ]]; then
+  echo "Google OAuth values in ${CONFIG_FILE} are still placeholders." >&2
+  exit 1
+fi
+
 PUBLIC_HOST="${PUBLIC_HOST:-$(tailscale status --self --json | jq -r '.Self.DNSName' | sed 's/\\.$//')}"
 OAUTH2_PROXY_EMAIL_DOMAIN="${OAUTH2_PROXY_EMAIL_DOMAIN:-blendalabs.com}"
 OAUTH2_PROXY_HTTP_ADDRESS="${OAUTH2_PROXY_HTTP_ADDRESS:-127.0.0.1:4180}"

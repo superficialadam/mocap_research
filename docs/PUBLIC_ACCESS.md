@@ -77,6 +77,14 @@ Create an OAuth client:
 7. Copy the **Client ID**.
 8. Copy the **Client secret** immediately and store it safely.
 
+If the Tailscale hostname ever changes, re-check it on the Ubuntu host with:
+
+```bash
+tailscale status --self --json | jq -r '.Self.DNSName' | sed 's/\.$//'
+```
+
+Then update the Google client redirect URI, origin, and `PUBLIC_HOST` to match.
+
 ## 3. Fill the local config
 
 Edit `config/oauth2-proxy.env` on the Ubuntu host:
