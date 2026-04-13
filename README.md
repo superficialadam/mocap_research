@@ -7,6 +7,7 @@ Thin deployment repo for running NVIDIA Kimodo on the Ubuntu 5090 box at `adam-U
 - clones the upstream Kimodo code into `vendor/kimodo`
 - installs Kimodo into a local `.venv`
 - starts the text encoder and demo server on `0.0.0.0:7860`
+- starts a local previz solver service on `127.0.0.1:8765`
 - keeps logs and PID files under this repo so the setup is repeatable
 
 ## Remote layout
@@ -88,7 +89,7 @@ Full Google OAuth and Funnel instructions are in:
 
 ## Reboot Persistence
 
-To install user `systemd` services so Kimodo and `oauth2-proxy` restart automatically:
+To install user `systemd` services so Kimodo, the previz solver, and `oauth2-proxy` restart automatically:
 
 ```bash
 ./scripts/install_systemd_user_services.sh

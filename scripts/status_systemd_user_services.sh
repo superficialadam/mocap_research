@@ -2,6 +2,7 @@
 set -euo pipefail
 
 systemctl --user --no-pager --full status \
+  kimodo-previz-solver.service \
   kimodo-text-encoder.service \
   kimodo-demo.service \
   oauth2-proxy.service

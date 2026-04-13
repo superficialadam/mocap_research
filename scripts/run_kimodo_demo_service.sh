@@ -27,7 +27,10 @@ cd "${ROOT_DIR}/vendor/kimodo"
 export SERVER_NAME="${SERVER_NAME:-0.0.0.0}"
 export SERVER_PORT="${SERVER_PORT:-7860}"
 export TEXT_ENCODER_URL="${TEXT_ENCODER_URL:-http://127.0.0.1:${TEXT_PORT}/}"
+export PREVIZ_SOLVER_URL="${PREVIZ_SOLVER_URL:-http://127.0.0.1:8765}"
+export PREVIZ_STORE_DIR="${PREVIZ_STORE_DIR:-${ROOT_DIR}/run/previz-shots}"
 export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 
 exec python -m kimodo.demo

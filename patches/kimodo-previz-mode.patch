@@ -1,0 +1,230 @@
+diff --git a/kimodo/demo/app.py b/kimodo/demo/app.py
+index 82c210c..3e6421f 100644
+--- a/kimodo/demo/app.py
++++ b/kimodo/demo/app.py
+@@ -292,6 +292,12 @@ class Demo:
+     def _cleanup_session_for_client(self, client_id: int) -> None:
+         """Remove session and scene state for a client (e.g. on session expiry)."""
+         if client_id in self.client_sessions:
++            session = self.client_sessions[client_id]
++            if getattr(session, "previz_controller", None) is not None:
++                try:
++                    session.previz_controller.disable()
++                except Exception:
++                    traceback.print_exc()
+             del self.client_sessions[client_id]
+         self.start_direction_markers.pop(client_id, None)
+         self.grid_handles.pop(client_id, None)
+@@ -314,6 +320,7 @@ class Demo:
+             gui_save_example_path_text,
+             gui_model_selector,
+             gui_generation_status,
++            previz_controller,
+         ) = ui.create_gui(
+             demo=self,
+             client=client,
+@@ -359,6 +366,7 @@ class Demo:
+             gui_save_example_path_text=gui_save_example_path_text,
+             gui_model_selector=gui_model_selector,
+             gui_generation_status=gui_generation_status,
++            previz_controller=previz_controller,
+         )
+ 
+         self.client_sessions[client.client_id] = session
+@@ -738,6 +746,8 @@ class Demo:
+         for motion in list(session.motions.values()):
+             motion.set_frame(frame_idx)
+         self._apply_constraint_overlay_visibility(session)
++        if getattr(session, "previz_controller", None) is not None:
++            session.previz_controller.sync_handles_to_frame()
+ 
+     def run(self) -> None:
+         update_counter = 0
+diff --git a/kimodo/demo/state.py b/kimodo/demo/state.py
+index 5c7ef25..b9c7506 100644
+--- a/kimodo/demo/state.py
++++ b/kimodo/demo/state.py
+@@ -52,6 +52,9 @@ class ClientSession:
+     gui_save_example_path_text: Optional[viser.GuiInputHandle] = None
+     gui_model_selector: Optional[viser.GuiInputHandle] = None
+     gui_generation_status: Optional[object] = None
++    previz_controller: Optional[object] = None
++    previz_enabled: bool = False
++    previz_shot: Optional[object] = None
+     last_prompt_texts: Optional[list[str]] = None
+     last_prompt_embeddings: Optional[torch.Tensor] = None
+     last_prompt_lengths: Optional[list[int]] = None
+diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
+index 08c8a28..75c6f21 100644
+--- a/kimodo/demo/ui.py
++++ b/kimodo/demo/ui.py
+@@ -23,6 +23,7 @@ from kimodo.viz.viser_utils import GuiElements
+ import numpy as np
+ import torch
+ import viser
++from previz import PrevizController
+ from viser._timeline_api import PROMPT_COLORS
+ 
+ from . import generation
+@@ -3002,6 +3003,155 @@ def create_gui(
+                     color="red",
+                 )
+ 
++    def get_previz_session():
++        return demo.client_sessions.get(client_id)
++
++    with tab_group.add_tab("Previz", viser.Icon.INFO_CIRCLE):
++        gui_previz_status = client.gui.add_markdown(
++            "**Previz:** Generate a take, then enter previz mode for shot-level posing."
++        )
++        with client.gui.add_folder("Shot", expand_by_default=True):
++            gui_previz_shot_name = client.gui.add_text("Shot Name", initial_value="Previz Shot")
++            gui_previz_capture_button = client.gui.add_button("Capture Shot")
++            gui_previz_save_button = client.gui.add_button("Save Shot")
++            gui_previz_load_id = client.gui.add_text("Shot ID", initial_value="")
++            gui_previz_load_button = client.gui.add_button("Load Shot")
++
++        with client.gui.add_folder("Edit", expand_by_default=True):
++            gui_previz_toggle_button = client.gui.add_button("Enter Previz Mode", color="green")
++            gui_previz_preview_button = client.gui.add_button("Preview Current Frame")
++            gui_previz_regenerate_button = client.gui.add_button("Regenerate From Edits")
++            gui_previz_approve_button = client.gui.add_button("Approve Current Take")
++            gui_previz_pin_left_hand = client.gui.add_checkbox("Pin Left Hand", initial_value=False)
++            gui_previz_pin_right_hand = client.gui.add_checkbox("Pin Right Hand", initial_value=False)
++            gui_previz_pin_left_foot = client.gui.add_checkbox("Pin Left Foot", initial_value=False)
++            gui_previz_pin_right_foot = client.gui.add_checkbox("Pin Right Foot", initial_value=False)
++
++        previz_controller = PrevizController(
++            demo=demo,
++            client=client,
++            session_getter=get_previz_session,
++            status_handle=gui_previz_status,
++            add_constraint_callback=add_constraint_callback,
++            solver_url=os.environ.get("PREVIZ_SOLVER_URL", "http://127.0.0.1:8765"),
++            store_dir=os.environ.get("PREVIZ_STORE_DIR", os.path.join(os.getcwd(), "previz_shots")),
++        )
++
++        def refresh_previz_button() -> None:
++            gui_previz_toggle_button.label = "Exit Previz Mode" if previz_controller.enabled else "Enter Previz Mode"
++            gui_previz_toggle_button.color = "red" if previz_controller.enabled else "green"
++
++        @gui_previz_capture_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.capture_shot(gui_previz_shot_name.value)
++
++        @gui_previz_save_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.save_shot()
++
++        @gui_previz_load_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            shot_id = gui_previz_load_id.value.strip()
++            if not shot_id:
++                gui_previz_status.content = "**Previz:** Enter a saved shot id before loading."
++                return
++            try:
++                shot = previz_controller.load_shot(shot_id)
++                gui_previz_shot_name.value = shot.name
++            except Exception as exc:
++                gui_previz_status.content = f"**Previz:** Could not load shot. `{exc}`"
++
++        @gui_previz_toggle_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.toggle()
++            refresh_previz_button()
++
++        @gui_previz_pin_left_hand.on_update
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.set_pin("left_hand", gui_previz_pin_left_hand.value)
++
++        @gui_previz_pin_right_hand.on_update
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.set_pin("right_hand", gui_previz_pin_right_hand.value)
++
++        @gui_previz_pin_left_foot.on_update
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.set_pin("left_foot", gui_previz_pin_left_foot.value)
++
++        @gui_previz_pin_right_foot.on_update
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.set_pin("right_foot", gui_previz_pin_right_foot.value)
++
++        @gui_previz_preview_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.preview_current_frame()
++
++        @gui_previz_approve_button.on_click
++        def _(_event: viser.GuiEvent) -> None:
++            previz_controller.approve_current_take()
++
++        @gui_previz_regenerate_button.on_click
++        def _(event: viser.GuiEvent) -> None:
++            event_client = event.client
++            session = get_active_session(event_client)
++            if session is None:
++                return
++
++            previz_controller.preview_current_frame()
++            shot = previz_controller.ensure_shot()
++            shot.status = "regenerating"
++
++            timeline = session.client.timeline
++            prompt_values = sorted([x for x in timeline._prompts.values()], key=lambda x: x.start_frame)
++            texts = [x.text for x in prompt_values]
++            num_frames = compute_prompt_num_frames(prompt_values)
++            total_nb_frames = sum(num_frames)
++            total_duration = total_nb_frames / session.model_fps
++            set_new_duration(client_id, total_duration)
++
++            transitions_parameters = {
++                "num_transition_frames": gui_num_transition_frames_slider.value,
++                "share_transition": gui_share_transition_checkbox.value,
++                "percentage_transition_override": gui_percentage_transition_sharing_slider.value / 100,
++            }
++            postprocess_parameters = {
++                "post_processing": (False if "g1" in session.model_name else gui_postprocess_checkbox.value),
++                "root_margin": gui_root_margin.value,
++            }
++
++            def run_regeneration_request() -> None:
++                demo.generate(
++                    event_client,
++                    texts,
++                    num_frames,
++                    1,
++                    gui_seed.value,
++                    gui_diffusion_steps_slider.value,
++                    cfg_weight=[
++                        gui_cfg_text_weight_slider.value,
++                        gui_cfg_constraint_weight_slider.value,
++                    ],
++                    cfg_type="separated" if gui_cfg_checkbox.value else "nocfg",
++                    postprocess_parameters=postprocess_parameters,
++                    transitions_parameters=transitions_parameters,
++                    real_robot_rotations=gui_real_robot_rotations_checkbox.value,
++                )
++                previz_controller.add_take("regenerated")
++                gui_previz_status.content = "**Previz:** Regenerated a new take from the current hidden guides."
++
++            try:
++                demo.enqueue_generation(event_client, run_regeneration_request)
++                event_client.add_notification(
++                    title="Previz regeneration queued",
++                    body="Kimodo will regenerate the shot using the current previz edits.",
++                    auto_close_seconds=4.0,
++                    color="blue",
++                )
++            except Exception as exc:
++                gui_previz_status.content = f"**Previz:** Could not queue regeneration. `{exc}`"
++
++        refresh_previz_button()
++
+     #
+     # Visualization settings
+     #
+@@ -3291,4 +3441,5 @@ def create_gui(
+         gui_save_example_path_text,
+         gui_model_selector,
+         gui_generation_status,
++        previz_controller,
+     )

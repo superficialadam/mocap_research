@@ -1,0 +1,14 @@
+[Unit]
+Description=Kimodo Previz Solver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/CODE/blenda/mocap_research
+ExecStart=%h/CODE/blenda/mocap_research/scripts/run_previz_solver_service.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

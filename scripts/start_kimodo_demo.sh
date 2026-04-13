@@ -9,8 +9,10 @@ RUN_DIR="${ROOT_DIR}/run"
 TOKEN_FILE="${HOME}/.cache/huggingface/token"
 TEXT_PID_FILE="${RUN_DIR}/text-encoder.pid"
 DEMO_PID_FILE="${RUN_DIR}/demo.pid"
+PREVIZ_SOLVER_PID_FILE="${RUN_DIR}/previz-solver.pid"
 SERVER_PORT="${SERVER_PORT:-7860}"
 TEXT_PORT="${TEXT_PORT:-9550}"
+PREVIZ_SOLVER_PORT="${PREVIZ_SOLVER_PORT:-8765}"
 TAILSCALE_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 
 mkdir -p "${LOG_DIR}" "${RUN_DIR}"
@@ -56,6 +58,15 @@ start_if_not_running() {
 cd "${KIMODO_DIR}"
 
 start_if_not_running \
+  "${PREVIZ_SOLVER_PID_FILE}" \
+  env \
+    PREVIZ_SOLVER_HOST=127.0.0.1 \
+    PREVIZ_SOLVER_PORT="${PREVIZ_SOLVER_PORT}" \
+    PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" \
+    PYTHONUNBUFFERED=1 \
+    bash -lc "source '${VENV_DIR}/bin/activate' && python -m previz_solver.app >>'${LOG_DIR}/previz-solver.log' 2>&1"
+
+start_if_not_running \
   "${TEXT_PID_FILE}" \
   env \
     GRADIO_SERVER_NAME=0.0.0.0 \
@@ -72,6 +83,9 @@ start_if_not_running \
     SERVER_NAME=0.0.0.0 \
     SERVER_PORT="${SERVER_PORT}" \
     TEXT_ENCODER_URL="http://127.0.0.1:${TEXT_PORT}/" \
+    PREVIZ_SOLVER_URL="http://127.0.0.1:${PREVIZ_SOLVER_PORT}" \
+    PREVIZ_STORE_DIR="${ROOT_DIR}/run/previz-shots" \
+    PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" \
     HF_HOME="${HOME}/.cache/huggingface" \
     PYTHONUNBUFFERED=1 \
     bash -lc "source '${VENV_DIR}/bin/activate' && python -m kimodo.demo >>'${LOG_DIR}/demo.log' 2>&1"
@@ -84,6 +98,7 @@ Tailnet URL:
   ${TAILSCALE_IP:-tailscale ip unavailable}
 
 Local logs:
+  ${LOG_DIR}/previz-solver.log
   ${LOG_DIR}/text-encoder.log
   ${LOG_DIR}/demo.log
 EOF

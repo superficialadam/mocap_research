@@ -18,7 +18,7 @@ stop_pid_tree() {
   fi
 }
 
-for name in demo text-encoder; do
+for name in demo text-encoder previz-solver; do
   pid_file="${RUN_DIR}/${name}.pid"
   if [[ ! -f "${pid_file}" ]]; then
     echo "${name}: not running"
