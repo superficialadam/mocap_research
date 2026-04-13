@@ -22,16 +22,14 @@ if [[ ${#patches[@]} -eq 0 ]]; then
   exit 0
 fi
 
+git -C "${KIMODO_DIR}" reset --hard origin/main >/dev/null
+git -C "${KIMODO_DIR}" clean -fd >/dev/null
+
 for patch_path in "${patches[@]}"; do
   patch_name="$(basename "${patch_path}")"
   if git -C "${KIMODO_DIR}" apply --check "${patch_path}" >/dev/null 2>&1; then
     git -C "${KIMODO_DIR}" apply "${patch_path}"
     echo "Applied ${patch_name}"
-    continue
-  fi
-
-  if git -C "${KIMODO_DIR}" apply -R --check "${patch_path}" >/dev/null 2>&1; then
-    echo "Already applied ${patch_name}"
     continue
   fi
 
