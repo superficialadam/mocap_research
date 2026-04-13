@@ -7,6 +7,7 @@ Thin deployment repo for running NVIDIA Kimodo on the Ubuntu 5090 box at `adam-U
 - clones the upstream Kimodo code into `vendor/kimodo`
 - installs Kimodo into a local `.venv`
 - starts the text encoder and demo server on `0.0.0.0:7860`
+- installs a local `closed-chain-ik-js` solver under `previz_solver_js/`
 - starts a local previz solver service on `127.0.0.1:8765`
 - keeps logs and PID files under this repo so the setup is repeatable
 
@@ -46,6 +47,7 @@ This will:
 4. create `.venv`
 5. install GPU PyTorch for CUDA 12.8
 6. install Kimodo with demo extras
+7. install `closed-chain-ik-js` solver dependencies with `npm`
 
 Authenticate Hugging Face after bootstrap:
 
@@ -93,7 +95,7 @@ To install user `systemd` services so Kimodo, the previz solver, and `oauth2-pro
 
 ```bash
 ./scripts/install_systemd_user_services.sh
-systemctl --user restart kimodo-text-encoder.service kimodo-demo.service oauth2-proxy.service
+systemctl --user restart kimodo-previz-solver.service kimodo-text-encoder.service kimodo-demo.service oauth2-proxy.service
 ```
 
 To make those user services start after a full reboot without an interactive login, enable lingering once:

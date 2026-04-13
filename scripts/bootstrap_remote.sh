@@ -28,6 +28,9 @@ clone_or_update "https://github.com/nv-tlabs/kimodo.git" "${KIMODO_DIR}"
 clone_or_update "https://github.com/nv-tlabs/kimodo-viser.git" "${VISER_DIR}"
 ./scripts/apply_local_patches.sh
 
+./scripts/install_node_runtime.sh
+export PATH="${ROOT_DIR}/tools/node/current/bin:${PATH}"
+
 if [[ -e "${VENV_DIR}" && ! -x "${VENV_PYTHON}" ]]; then
   rm -rf "${VENV_DIR}"
 fi
@@ -57,6 +60,8 @@ else
   python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
   python -m pip install -e "${KIMODO_DIR}[all]"
 fi
+
+npm --prefix "${ROOT_DIR}/previz_solver_js" install --omit=dev
 
 cat <<EOF
 Bootstrap complete.

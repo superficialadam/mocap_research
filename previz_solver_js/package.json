@@ -1,0 +1,12 @@
+{
+  "name": "mocap-research-previz-solver",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ./server.mjs"
+  },
+  "dependencies": {
+    "closed-chain-ik": "github:gkjohnson/closed-chain-ik-js",
+    "gl-matrix": "^3.4.4"
+  }
+}

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
 import torch
 import viser
 import viser.transforms as tf
@@ -47,6 +46,9 @@ class PrevizController:
         self.shot: Shot | None = None
         self.bindings: dict[str, HandleBinding] = {}
         self._syncing = False
+        self._translate_targets: dict[str, list[float]] = {}
+        self._rotation_targets: dict[str, list[float]] = {}
+        self._active_frame_idx: int | None = None
 
     @property
     def session(self):
@@ -123,6 +125,13 @@ class PrevizController:
         pin.enabled = enabled
         pin.frame = self.session.frame_idx if enabled else None
         shot.pins[pin_key] = pin
+        if self.enabled:
+            binding = self.bindings.get(pin_key)
+            if binding is not None:
+                if enabled:
+                    self._translate_targets[pin_key] = [float(v) for v in binding.handle.position]
+                elif pin_key not in {"left_foot", "right_foot"}:
+                    self._translate_targets.pop(pin_key, None)
         if announce:
             state = "enabled" if enabled else "cleared"
             self._set_status(f"**Previz:** {pin_key.replace('_', ' ')} pin {state}.")
@@ -146,19 +155,17 @@ class PrevizController:
         self.session.previz_enabled = True
         motion.character.set_skeleton_visibility(True)
         motion.character.set_skinned_mesh_visibility(True)
-        motion.character.set_skinned_mesh_opacity(0.72)
+        motion.character.set_skinned_mesh_opacity(0.82)
         self.session.gui_elements.gui_viz_skinned_mesh_checkbox.value = True
         self.session.gui_elements.gui_viz_skeleton_checkbox.value = True
-        self.session.gui_elements.gui_viz_skinned_mesh_opacity_slider.value = 0.72
+        self.session.gui_elements.gui_viz_skinned_mesh_opacity_slider.value = 0.82
         motion.clear_all_gizmos()
-        motion.add_root_translation_gizmo(self.session.constraints)
-        motion.add_joint_gizmos(self.session.constraints, space="local")
-        self._show_rotation_gizmos_only({"Head", "Chest", "Spine3", "Spine2", "Hips", "Pelvis"})
         self._create_effector_handles()
+        self._reset_targets_from_frame(self.session.frame_idx)
         self.sync_handles_to_frame()
         self.ensure_shot()
         self._set_status(
-            "**Previz:** Drag hands or feet for IK posing. Use the visible torso/head gizmos for silhouette tweaks."
+            "**Previz:** Feet stay planted by default. Drag hands, feet, or hips to pose the full body. Rotate chest or head for silhouette tweaks."
         )
 
     def disable(self) -> None:
@@ -166,6 +173,9 @@ class PrevizController:
         self.enabled = False
         self.session.previz_enabled = False
         self._clear_effector_handles()
+        self._translate_targets.clear()
+        self._rotation_targets.clear()
+        self._active_frame_idx = None
         if motion is not None:
             motion.clear_all_gizmos()
             motion.character.set_skeleton_visibility(False)
@@ -181,6 +191,8 @@ class PrevizController:
         if motion is None:
             return
         frame_idx = min(self.session.frame_idx, motion.length - 1)
+        if self._active_frame_idx != frame_idx:
+            self._reset_targets_from_frame(frame_idx)
         joints_pos = motion.joints_pos[frame_idx].detach().cpu().numpy()
         joints_rot = motion.joints_rot[frame_idx].detach().cpu().numpy()
         self._syncing = True
@@ -249,9 +261,20 @@ class PrevizController:
         if motion is None:
             return
         binding = self.bindings[binding_name]
-        chain = self._chain_for_effector(binding.joint_index)
-        if len(chain) < 2:
-            return
+        if binding.mode == "translate":
+            self._translate_targets[binding_name] = [float(v) for v in binding.handle.position]
+        else:
+            self._rotation_targets[binding_name] = [float(v) for v in binding.handle.wxyz]
+
+        solved = self._solve_current_frame(motion)
+        joints_pos = torch.tensor(solved["joints_pos"], device=motion.joints_pos.device, dtype=motion.joints_pos.dtype)
+        joints_rot = torch.tensor(solved["joints_rot"], device=motion.joints_rot.device, dtype=motion.joints_rot.dtype)
+        frame_idx = min(self.session.frame_idx, motion.length - 1)
+        motion.update_pose_at_frame(frame_idx, joints_pos=joints_pos, joints_rot=joints_rot)
+        self.demo.set_frame(self.client.client_id, frame_idx, update_timeline=False)
+        self._set_status(f"**Previz:** Updated {binding.joint_name} on frame {frame_idx}.")
+
+    def _solve_current_frame(self, motion):
         frame_idx = min(self.session.frame_idx, motion.length - 1)
         payload = {
             "joint_names": list(self.session.skeleton.bone_order_names),
@@ -260,79 +283,63 @@ class PrevizController:
             "joints_rot": motion.get_joints_rot(frame_idx).tolist(),
             "effectors": [
                 {
-                    "joint_index": binding.joint_index,
-                    "chain": chain,
-                    "target_position": list(binding.handle.position),
+                    "joint_index": self.bindings[name].joint_index,
+                    "target_position": target,
                 }
+                for name, target in self._translate_targets.items()
+                if name in self.bindings
             ],
-            "rotation_targets": [],
-        }
-        for pin_key, pin_name in (
-            ("left_hand", "left_hand"),
-            ("right_hand", "right_hand"),
-            ("left_foot", "left_foot"),
-            ("right_foot", "right_foot"),
-        ):
-            pin = self.ensure_shot().pins.get(pin_key)
-            if not pin or not pin.enabled:
-                continue
-            pin_binding = self.bindings.get(pin_name)
-            if pin_binding is None or pin_binding.joint_index == binding.joint_index:
-                continue
-            payload["effectors"].append(
+            "rotation_targets": [
                 {
-                    "joint_index": pin_binding.joint_index,
-                    "chain": self._chain_for_effector(pin_binding.joint_index),
-                    "target_position": motion.joints_pos[frame_idx, pin_binding.joint_index].detach().cpu().tolist(),
+                    "joint_index": self.bindings[name].joint_index,
+                    "target_wxyz": target,
                 }
-            )
+                for name, target in self._rotation_targets.items()
+                if name in self.bindings
+            ],
+        }
+        return self.solver.solve_frame(payload)
 
-        solved = self.solver.solve_frame(payload)
-        joints_pos = torch.tensor(solved["joints_pos"], device=motion.joints_pos.device, dtype=motion.joints_pos.dtype)
-        joints_rot = torch.tensor(solved["joints_rot"], device=motion.joints_rot.device, dtype=motion.joints_rot.dtype)
-        motion.update_pose_at_frame(frame_idx, joints_pos=joints_pos, joints_rot=joints_rot)
-        self.demo.set_frame(self.client.client_id, frame_idx, update_timeline=False)
-        self._set_status(f"**Previz:** Updated {binding.joint_name} on frame {frame_idx}.")
-
-    def _chain_for_effector(self, end_idx: int) -> list[int]:
-        parents = [int(value) for value in self.session.skeleton.joint_parents.tolist()]
-        chain = [end_idx]
-        current = end_idx
-        max_nodes = 4
-        while len(chain) < max_nodes:
-            parent = parents[current]
-            if parent < 0:
-                break
-            chain.append(parent)
-            current = parent
-        return list(reversed(chain))
-
-    def _show_rotation_gizmos_only(self, allowed_names: set[str]) -> None:
+    def _reset_targets_from_frame(self, frame_idx: int) -> None:
         motion = self.current_motion()
-        if motion is None or motion.joint_gizmos is None:
+        if motion is None:
             return
-        for joint_idx, handle in enumerate(motion.joint_gizmos):
-            joint_name = self.session.skeleton.bone_order_names[joint_idx]
-            handle.visible = joint_name in allowed_names
+        joints_pos = motion.joints_pos[frame_idx].detach().cpu().numpy()
+        self._translate_targets = {}
+        self._rotation_targets = {}
+        for default_name in ("left_foot", "right_foot"):
+            binding = self.bindings.get(default_name)
+            if binding is not None:
+                self._translate_targets[default_name] = joints_pos[binding.joint_index].astype(float).tolist()
+
+        shot = self.ensure_shot()
+        for pin_key, pin in shot.pins.items():
+            if not pin.enabled:
+                continue
+            binding = self.bindings.get(pin_key)
+            if binding is not None and binding.mode == "translate":
+                self._translate_targets[pin_key] = joints_pos[binding.joint_index].astype(float).tolist()
+        self._active_frame_idx = frame_idx
 
     def _create_effector_handles(self) -> None:
         self._clear_effector_handles()
         motion = self.current_motion()
         if motion is None:
             return
-        for handle_name, joint_name in (
-            ("left_hand", self._find_joint_name(("LeftWrist", "LeftHand"))),
-            ("right_hand", self._find_joint_name(("RightWrist", "RightHand"))),
-            ("left_foot", self._find_joint_name(("LeftFoot", "LeftAnkle"))),
-            ("right_foot", self._find_joint_name(("RightFoot", "RightAnkle"))),
+        for handle_name, joint_name, scale in (
+            ("hips", self._find_joint_name(("Hips", "Pelvis", "Hip")), 0.24),
+            ("left_hand", self._find_joint_name(("LeftWrist", "LeftHand")), 0.18),
+            ("right_hand", self._find_joint_name(("RightWrist", "RightHand")), 0.18),
+            ("left_foot", self._find_joint_name(("LeftFoot", "LeftAnkle")), 0.18),
+            ("right_foot", self._find_joint_name(("RightFoot", "RightAnkle")), 0.18),
         ):
             if joint_name is None:
                 continue
             joint_idx = self.session.skeleton.bone_index[joint_name]
             handle = self.client.scene.add_transform_controls(
                 f"/previz/{handle_name}",
-                scale=0.18,
-                line_width=3.0,
+                scale=scale,
+                line_width=3.5,
                 active_axes=(True, True, True),
                 disable_axes=False,
                 disable_sliders=False,
@@ -345,6 +352,36 @@ class PrevizController:
                 joint_index=joint_idx,
                 handle=handle,
                 mode="translate",
+            )
+            self.bindings[handle_name] = binding
+
+            @handle.on_update
+            def _(_event, binding_name=handle_name):
+                self.solve_effector_drag(binding_name)
+
+        for handle_name, joint_name, scale in (
+            ("chest", self._find_joint_name(("Chest", "UpperChest", "Spine3", "Spine2")), 0.2),
+            ("head", self._find_joint_name(("Head", "Neck")), 0.16),
+        ):
+            if joint_name is None:
+                continue
+            joint_idx = self.session.skeleton.bone_index[joint_name]
+            handle = self.client.scene.add_transform_controls(
+                f"/previz/{handle_name}",
+                scale=scale,
+                line_width=3.5,
+                active_axes=(True, True, True),
+                disable_axes=True,
+                disable_sliders=True,
+                disable_rotations=False,
+                depth_test=False,
+            )
+            binding = HandleBinding(
+                name=handle_name,
+                joint_name=joint_name,
+                joint_index=joint_idx,
+                handle=handle,
+                mode="rotate",
             )
             self.bindings[handle_name] = binding
 

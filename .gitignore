@@ -6,3 +6,4 @@ run/
 vendor/
 tools/
 config/oauth2-proxy.env
+previz_solver_js/node_modules/

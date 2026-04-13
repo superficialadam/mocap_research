@@ -64,7 +64,7 @@ start_if_not_running \
     PREVIZ_SOLVER_PORT="${PREVIZ_SOLVER_PORT}" \
     PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" \
     PYTHONUNBUFFERED=1 \
-    bash -lc "source '${VENV_DIR}/bin/activate' && python -m previz_solver.app >>'${LOG_DIR}/previz-solver.log' 2>&1"
+    bash -lc "'${ROOT_DIR}/scripts/run_previz_solver_service.sh' >>'${LOG_DIR}/previz-solver.log' 2>&1"
 
 start_if_not_running \
   "${TEXT_PID_FILE}" \
