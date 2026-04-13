@@ -283,6 +283,7 @@ class PrevizController:
             "joints_rot": motion.get_joints_rot(frame_idx).tolist(),
             "effectors": [
                 {
+                    "control_name": name,
                     "joint_index": self.bindings[name].joint_index,
                     "target_position": target,
                 }
@@ -291,6 +292,7 @@ class PrevizController:
             ],
             "rotation_targets": [
                 {
+                    "control_name": name,
                     "joint_index": self.bindings[name].joint_index,
                     "target_wxyz": target,
                 }
