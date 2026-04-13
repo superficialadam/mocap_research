@@ -1,8 +1,6 @@
-diff --git a/kimodo/demo/app.py b/kimodo/demo/app.py
-index 82c210c..3e6421f 100644
 --- a/kimodo/demo/app.py
 +++ b/kimodo/demo/app.py
-@@ -292,6 +292,12 @@ class Demo:
+@@ -292,6 +292,12 @@
      def _cleanup_session_for_client(self, client_id: int) -> None:
          """Remove session and scene state for a client (e.g. on session expiry)."""
          if client_id in self.client_sessions:
@@ -15,7 +13,7 @@ index 82c210c..3e6421f 100644
              del self.client_sessions[client_id]
          self.start_direction_markers.pop(client_id, None)
          self.grid_handles.pop(client_id, None)
-@@ -314,6 +320,7 @@ class Demo:
+@@ -314,6 +320,7 @@
              gui_save_example_path_text,
              gui_model_selector,
              gui_generation_status,
@@ -23,7 +21,7 @@ index 82c210c..3e6421f 100644
          ) = ui.create_gui(
              demo=self,
              client=client,
-@@ -359,6 +366,7 @@ class Demo:
+@@ -359,6 +366,7 @@
              gui_save_example_path_text=gui_save_example_path_text,
              gui_model_selector=gui_model_selector,
              gui_generation_status=gui_generation_status,
@@ -31,7 +29,7 @@ index 82c210c..3e6421f 100644
          )
  
          self.client_sessions[client.client_id] = session
-@@ -738,6 +746,8 @@ class Demo:
+@@ -738,6 +746,8 @@
          for motion in list(session.motions.values()):
              motion.set_frame(frame_idx)
          self._apply_constraint_overlay_visibility(session)
@@ -40,11 +38,9 @@ index 82c210c..3e6421f 100644
  
      def run(self) -> None:
          update_counter = 0
-diff --git a/kimodo/demo/state.py b/kimodo/demo/state.py
-index 5c7ef25..b9c7506 100644
 --- a/kimodo/demo/state.py
 +++ b/kimodo/demo/state.py
-@@ -52,6 +52,9 @@ class ClientSession:
+@@ -52,6 +52,9 @@
      gui_save_example_path_text: Optional[viser.GuiInputHandle] = None
      gui_model_selector: Optional[viser.GuiInputHandle] = None
      gui_generation_status: Optional[object] = None
@@ -54,11 +50,9 @@ index 5c7ef25..b9c7506 100644
      last_prompt_texts: Optional[list[str]] = None
      last_prompt_embeddings: Optional[torch.Tensor] = None
      last_prompt_lengths: Optional[list[int]] = None
-diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
-index 08c8a28..75c6f21 100644
 --- a/kimodo/demo/ui.py
 +++ b/kimodo/demo/ui.py
-@@ -23,6 +23,7 @@ from kimodo.viz.viser_utils import GuiElements
+@@ -23,6 +23,7 @@
  import numpy as np
  import torch
  import viser
@@ -66,10 +60,178 @@ index 08c8a28..75c6f21 100644
  from viser._timeline_api import PROMPT_COLORS
  
  from . import generation
-@@ -3002,6 +3003,155 @@ def create_gui(
+@@ -3002,6 +3003,323 @@
                      color="red",
                  )
  
++    def collapse_motions_to_static_pose(session: ClientSession) -> None:
++        """Collapse generated motions to a single repeated pose."""
++        for motion in session.motions.values():
++            if motion.length <= 0:
++                continue
++            pose_pos = motion.joints_pos[0:1].clone()
++            pose_rot = motion.joints_rot[0:1].clone()
++            pose_local_rot = motion.joints_local_rot[0:1].clone()
++            motion.joints_pos = pose_pos.repeat(motion.length, 1, 1)
++            motion.joints_rot = pose_rot.repeat(motion.length, 1, 1, 1)
++            motion.joints_local_rot = pose_local_rot.repeat(motion.length, 1, 1, 1)
++            if motion.foot_contacts is not None:
++                pose_contacts = motion.foot_contacts[0:1].clone()
++                motion.foot_contacts = pose_contacts.repeat(motion.length, 1)
++            motion.set_frame(0)
++
++    with tab_group.add_tab("Pose Prompt", viser.Icon.INFO_CIRCLE):
++        gui_pose_prompt_status = client.gui.add_markdown(
++            "**Pose Prompt:** Write one prompt and Kimodo will return a static pose."
++        )
++        with client.gui.add_folder("Prompt", expand_by_default=True):
++            gui_pose_prompt_text = client.gui.add_text(
++                "Pose Prompt",
++                initial_value="A relaxed hero pose with one hand on the hip.",
++            )
++            gui_pose_hold_frames = client.gui.add_slider(
++                "Hidden Hold Frames",
++                min=2,
++                max=24,
++                step=1,
++                initial_value=8,
++                hint="Kimodo still needs a short clip internally. The UI collapses it to a still pose.",
++            )
++            gui_pose_generate_button = client.gui.add_button("Generate Pose", color="green")
++
++        @gui_pose_generate_button.on_click
++        def _(event: viser.GuiEvent) -> None:
++            event_client = event.client
++            session = get_active_session(event_client)
++            if session is None:
++                return
++
++            pose_text = gui_pose_prompt_text.value.strip()
++            if not pose_text:
++                gui_pose_prompt_status.content = "**Pose Prompt:** Enter a prompt first."
++                return
++
++            gui_pose_generate_button.disabled = True
++            gui_generate_button.disabled = True
++            gui_load_model_button.disabled = True
++
++            hold_frames = int(gui_pose_hold_frames.value)
++            request_model_name = session.model_name
++            request_skeleton = session.skeleton
++            request_seed = gui_seed.value
++            request_diffusion_steps = gui_diffusion_steps_slider.value
++            request_cfg_weight = [
++                gui_cfg_text_weight_slider.value,
++                gui_cfg_constraint_weight_slider.value,
++            ]
++            request_cfg_type = "separated" if gui_cfg_checkbox.value else "nocfg"
++            request_real_robot_rotations = gui_real_robot_rotations_checkbox.value
++            transitions_parameters = {
++                "num_transition_frames": 1,
++                "share_transition": False,
++                "percentage_transition_override": 0.0,
++            }
++            postprocess_parameters = {
++                "post_processing": (False if "g1" in session.model_name else gui_postprocess_checkbox.value),
++                "root_margin": gui_root_margin.value,
++            }
++            model_constraints_snapshot = demo.snapshot_model_constraints(
++                session,
++                hold_frames,
++                model_name_override=request_model_name,
++            )
++
++            def run_pose_generation_request() -> None:
++                generating_notif = event_client.add_notification(
++                    title="Generating pose...",
++                    body="Generating a pose prompt request.",
++                    loading=True,
++                    with_close_button=False,
++                )
++                try:
++                    demo.generate(
++                        event_client,
++                        [pose_text],
++                        [hold_frames],
++                        1,
++                        request_seed,
++                        request_diffusion_steps,
++                        cfg_weight=request_cfg_weight,
++                        cfg_type=request_cfg_type,
++                        postprocess_parameters=postprocess_parameters,
++                        transitions_parameters=transitions_parameters,
++                        real_robot_rotations=request_real_robot_rotations,
++                        model_name_override=request_model_name,
++                        model_constraints_override=model_constraints_snapshot,
++                        skeleton_override=request_skeleton,
++                    )
++                    if event_client.client_id not in demo.client_sessions:
++                        return
++
++                    current_session = demo.client_sessions[event_client.client_id]
++                    collapse_motions_to_static_pose(current_session)
++                    current_session.max_frame_idx = 0
++                    current_session.cur_duration = 1 / current_session.model_fps
++                    update_duration_gui(current_session.cur_duration)
++                    event_client.timeline.set_current_frame(0)
++                    demo.set_frame(event_client.client_id, 0)
++
++                    gui_edit_constraint_button.disabled = False
++                    gui_snap_to_constraint_button.disabled = False
++                    gui_load_model_button.disabled = False
++
++                    generating_notif.title = "Pose generation finished"
++                    generating_notif.body = "Kimodo generated a still pose from the prompt."
++                    generating_notif.loading = False
++                    generating_notif.with_close_button = True
++                    generating_notif.auto_close_seconds = 5.0
++                    generating_notif.color = "green"
++                    gui_pose_prompt_status.content = (
++                        f"**Pose Prompt:** Generated a static pose from `{pose_text}` using a hidden {hold_frames}-frame clip."
++                    )
++                except Exception as e:
++                    import traceback
++
++                    traceback.print_exc()
++                    if event_client.client_id in demo.client_sessions:
++                        gui_pose_prompt_status.content = f"**Pose Prompt:** Generation failed. `{e}`"
++                        try:
++                            event_client.add_notification(
++                                title="Pose generation failed",
++                                body=str(e),
++                                auto_close_seconds=5.0,
++                                color="red",
++                            )
++                        except Exception:
++                            pass
++                        demo.check_cuda_health()
++                finally:
++                    if event_client.client_id in demo.client_sessions:
++                        gui_pose_generate_button.disabled = False
++                        gui_generate_button.disabled = False
++                        gui_load_model_button.disabled = False
++
++            try:
++                queue_position, replaced_request = demo.enqueue_generation(event_client, run_pose_generation_request)
++                queue_body = "Your pose will start shortly."
++                queue_title = "Pose queued"
++                if replaced_request:
++                    queue_title = "Queued pose updated"
++                    queue_body = f"Your queued pose request was replaced at position {queue_position}."
++                elif queue_position > 0:
++                    queue_body = f"Your pose request is queued at position {queue_position}."
++                event_client.add_notification(
++                    title=queue_title,
++                    body=queue_body,
++                    auto_close_seconds=4.0,
++                    color="blue",
++                )
++            except Exception as e:
++                gui_pose_generate_button.disabled = False
++                gui_generate_button.disabled = False
++                gui_load_model_button.disabled = False
++                gui_pose_prompt_status.content = f"**Pose Prompt:** Could not queue pose generation. `{e}`"
++
 +    def get_previz_session():
 +        return demo.client_sessions.get(client_id)
 +
@@ -222,7 +384,7 @@ index 08c8a28..75c6f21 100644
      #
      # Visualization settings
      #
-@@ -3291,4 +3441,5 @@ def create_gui(
+@@ -3291,4 +3609,5 @@
          gui_save_example_path_text,
          gui_model_selector,
          gui_generation_status,
